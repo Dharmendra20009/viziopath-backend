@@ -22,6 +22,15 @@ const cookieOptions = () => ({
   maxAge: 7 * 24 * 60 * 60 * 1000,
 });
 
+// Utility: pick safe user fields only
+const getSafeUser = (user) => ({
+  id: user._id,
+  name: user.name,
+  email: user.email,
+  role: user.role,
+  isVerified: user.isVerified,
+});
+
 // Register new user
 exports.register = asyncHandler(async (req, res) => {
   const { name, email, password, phone } = req.body;
@@ -30,20 +39,16 @@ exports.register = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'Name, email, and password are required');
   }
 
-  // Check if user already exists
   const existingUser = await User.findOne({ email });
   if (existingUser) {
     throw new ApiError(409, 'Email already registered');
   }
 
-  // Create user
   const user = await User.create({ name, email, password, phone });
-  
-  // Generate verification token
   const verificationToken = user.generateVerificationToken();
   await user.save();
 
-  // Send verification email
+  let emailSent = true;
   try {
     await sendEmail({
       to: user.email,
@@ -56,15 +61,20 @@ exports.register = asyncHandler(async (req, res) => {
     });
   } catch (error) {
     console.error('Email sending failed:', error);
+    emailSent = false;
   }
 
-  // Generate JWT token
   const token = signToken(user._id);
-
-  // Set cookie and send response
   res.cookie('token', token, cookieOptions());
+
   return res.status(201).json(
-    new ApiResponse(201, { user }, 'Registration successful. Please check your email to verify your account.')
+    new ApiResponse(
+      201, 
+      { user: getSafeUser(user) }, 
+      emailSent 
+        ? 'Registration successful. Please check your email to verify your account.' 
+        : 'Registration successful, but we could not send a verification email. Please try again later.'
+    )
   );
 });
 
@@ -76,7 +86,6 @@ exports.login = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'Email and password are required');
   }
 
-  // Find user and check if account is locked
   const user = await User.findOne({ email });
   if (!user) {
     throw new ApiError(401, 'Invalid credentials');
@@ -86,26 +95,20 @@ exports.login = asyncHandler(async (req, res) => {
     throw new ApiError(423, 'Account is temporarily locked. Please try again later.');
   }
 
-  // Verify password
   const isPasswordValid = await user.comparePassword(password);
   if (!isPasswordValid) {
     await user.incLoginAttempts();
     throw new ApiError(401, 'Invalid credentials');
   }
 
-  // Reset login attempts on successful login
   await user.resetLoginAttempts();
-  
-  // Update last login
   user.lastLogin = new Date();
   await user.save();
 
-  // Generate JWT token
   const token = signToken(user._id);
-
-  // Set cookie and send response
   res.cookie('token', token, cookieOptions());
-  return res.json(new ApiResponse(200, { user }, 'Login successful'));
+
+  return res.json(new ApiResponse(200, { user: getSafeUser(user) }, 'Login successful'));
 });
 
 // Get current user profile
@@ -115,7 +118,7 @@ exports.me = asyncHandler(async (req, res) => {
     throw new ApiError(404, 'User not found');
   }
   
-  return res.json(new ApiResponse(200, { user }, 'User profile retrieved'));
+  return res.json(new ApiResponse(200, { user: getSafeUser(user) }, 'User profile retrieved'));
 });
 
 // Update user profile
@@ -137,7 +140,7 @@ exports.updateProfile = asyncHandler(async (req, res) => {
     { new: true, runValidators: true }
   );
 
-  return res.json(new ApiResponse(200, { user }, 'Profile updated successfully'));
+  return res.json(new ApiResponse(200, { user: getSafeUser(user) }, 'Profile updated successfully'));
 });
 
 // Change password
@@ -153,13 +156,11 @@ exports.changePassword = asyncHandler(async (req, res) => {
     throw new ApiError(404, 'User not found');
   }
 
-  // Verify current password
   const isCurrentPasswordValid = await user.comparePassword(currentPassword);
   if (!isCurrentPasswordValid) {
     throw new ApiError(400, 'Current password is incorrect');
   }
 
-  // Update password
   user.password = newPassword;
   await user.save();
 
@@ -176,15 +177,12 @@ exports.forgotPassword = asyncHandler(async (req, res) => {
 
   const user = await User.findOne({ email });
   if (!user) {
-    // Don't reveal if email exists or not for security
     return res.json(new ApiResponse(200, {}, 'If an account with that email exists, a password reset link has been sent.'));
   }
 
-  // Generate reset token
   const resetToken = user.generatePasswordResetToken();
   await user.save();
 
-  // Send reset email
   try {
     await sendEmail({
       to: user.email,
@@ -211,7 +209,6 @@ exports.resetPassword = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'Token and new password are required');
   }
 
-  // Find user by reset token
   const user = await User.findOne({
     resetPasswordToken: token,
     resetPasswordExpires: { $gt: Date.now() }
@@ -221,7 +218,6 @@ exports.resetPassword = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'Invalid or expired reset token');
   }
 
-  // Update password and clear reset token
   user.password = newPassword;
   user.resetPasswordToken = undefined;
   user.resetPasswordExpires = undefined;
@@ -238,7 +234,6 @@ exports.verifyEmail = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'Verification token is required');
   }
 
-  // Find user by verification token
   const user = await User.findOne({
     verificationToken: token,
     verificationExpires: { $gt: Date.now() }
@@ -248,7 +243,6 @@ exports.verifyEmail = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'Invalid or expired verification token');
   }
 
-  // Verify user and clear token
   user.isVerified = true;
   user.verificationToken = undefined;
   user.verificationExpires = undefined;
@@ -274,11 +268,9 @@ exports.resendVerification = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'Email is already verified');
   }
 
-  // Generate new verification token
   const verificationToken = user.generateVerificationToken();
   await user.save();
 
-  // Send verification email
   try {
     await sendEmail({
       to: user.email,
@@ -299,7 +291,7 @@ exports.resendVerification = asyncHandler(async (req, res) => {
 
 // Logout user
 exports.logout = asyncHandler(async (req, res) => {
-  res.clearCookie('token', cookieOptions());
+  res.clearCookie('token'); // simplified
   return res.json(new ApiResponse(200, {}, 'Logged out successfully'));
 });
 
@@ -316,17 +308,13 @@ exports.deleteAccount = asyncHandler(async (req, res) => {
     throw new ApiError(404, 'User not found');
   }
 
-  // Verify password
   const isPasswordValid = await user.comparePassword(password);
   if (!isPasswordValid) {
     throw new ApiError(400, 'Password is incorrect');
   }
 
-  // Delete user
   await User.findByIdAndDelete(req.user.id);
-  
-  // Clear cookie
-  res.clearCookie('token', cookieOptions());
-  
+  res.clearCookie('token');
+
   return res.json(new ApiResponse(200, {}, 'Account deleted successfully'));
 });

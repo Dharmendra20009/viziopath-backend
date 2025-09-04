@@ -1,4 +1,6 @@
-const router = require('express').Router();
+const express = require('express');
+const router = express.Router();
+
 const { 
   register, 
   login, 
@@ -12,9 +14,10 @@ const {
   logout, 
   deleteAccount 
 } = require('../controllers/auth.controller');
+
 const auth = require('../middlewares/auth');
 
-// Public routes
+// ---------- Public routes ----------
 router.post('/register', register);
 router.post('/login', login);
 router.post('/forgot-password', forgotPassword);
@@ -22,7 +25,7 @@ router.post('/reset-password', resetPassword);
 router.get('/verify-email/:token', verifyEmail);
 router.post('/resend-verification', resendVerification);
 
-// Protected routes
+// ---------- Protected routes ----------
 router.get('/me', auth, me);
 router.put('/profile', auth, updateProfile);
 router.put('/change-password', auth, changePassword);
